@@ -2,12 +2,30 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
+#define JC_VERSION "0.0.1"
 #define CTRL_KEY(k) ((k) & 0x1f)
+#define ABUF_INIT {NULL,0}
 
-struct termios orig_termios;
+struct editorConfig
+{
+    int screenrows;
+    int screencols;
+    struct termios orig_termios;
+};
+
+struct abuf
+{
+    char *b;
+    int len;
+};
+
+
+struct editorConfig E;
 
 void die(const char * s){
     write(STDOUT_FILENO,"\x1b[2J",4);
@@ -17,14 +35,14 @@ void die(const char * s){
 }
 
 void disableRawMode(){
-    if(tcsetattr(STDIN_FILENO,TCSAFLUSH,&orig_termios) == -1)die("tcsetattr");
+    if(tcsetattr(STDIN_FILENO,TCSAFLUSH,&E.orig_termios) == -1)die("tcsetattr");
 }
 
 void enableRawMode(){
-    if(tcgetattr(STDIN_FILENO,&orig_termios) == -1)die("tcgetattr");
+    if(tcgetattr(STDIN_FILENO,&E.orig_termios) == -1)die("tcgetattr");
     atexit(disableRawMode);
     
-    struct termios raw = orig_termios;
+    struct termios raw = E.orig_termios;
 
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
     raw.c_oflag &= ~(OPOST);
@@ -36,6 +54,22 @@ void enableRawMode(){
     if(tcsetattr(STDIN_FILENO,TCSAFLUSH,&raw)==-1)die("tcsetattr");
 }
 
+void abAppend(struct abuf *ab,const char *s,int len){
+    char *new = realloc(ab->b,ab->len + len);
+
+    if(new == NULL) return;
+    
+    memcpy(&new[ab->len],s,len);
+    ab->b = new;
+    ab->len +=len;
+
+}
+
+void abFree(struct abuf *ab){
+    free(ab->b);
+}
+
+//this function take the input from the user
 char editorReadKey(){
     int nread;
     char c;
@@ -46,21 +80,79 @@ char editorReadKey(){
     return c;
 }
 
-void editorDrawRows(){
-    for(int y = 0 ; y < 24;y++){
-        write(STDOUT_FILENO,"~\r\n",3);
+int getCursorPosition(int *rows,int *cols){
+    char buf[32];
+    unsigned int i = 0;
+
+
+    if(write(STDOUT_FILENO,"\x1b[6n",4)!=4) return -1;
+
+    printf("\r\n");
+    char c;
+    
+    while(i < sizeof(buf) - 1){
+        if(read(STDIN_FILENO,&buf[i],1) != 1) break;
+        if(buf[i] == 'R') break;
+        i++;   
+    }
+
+    buf[i] = '\0';
+    if (buf[0] != '\x1b' || buf[1] != '[') return -1;
+    if (sscanf(&buf[2], "%d;%d", rows, cols) != 2) return -1;
+
+    return 0;
+}
+
+int getWindowSize(int *rows,int *cols){
+    struct winsize ws;
+
+    if(ioctl(STDOUT_FILENO,TIOCGWINSZ,&ws) == -1 ||ws.ws_col ==0){
+        if(write(STDOUT_FILENO,"\x1b[999C\x1b[999B",12)!=12) return -1;
+        return getCursorPosition(rows,cols);
+    }
+    else{
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+        return 0;
+    }
+}
+
+//this function draws the ~ before each line like vim
+void editorDrawRows(struct abuf *ab){
+    for(int y = 0 ; y < E.screenrows;y++){
+        if(y == E.screenrows / 3){
+            char welcome[80];
+            int welcomelen = snprintf(welcome,sizeof(welcome),"Just Code Editor -- version %s",JC_VERSION);
+            if(welcomelen > E.screencols) welcomelen = E.screencols;
+            abAppend(ab,welcome,welcomelen);
+        }
+        else{
+            abAppend(ab,"~",1);
+        }
+
+        abAppend(ab, "\x1b[K", 3);
+        if( y < E.screenrows - 1){
+            abAppend(ab,"\r\n",2);
+        }
     }
 }
 
 void editorRefreshScreen(){
-    write(STDOUT_FILENO,"\x1b[2J",4);
-    write(STDOUT_FILENO,"\x1b[H",3);
+    struct abuf ab = ABUF_INIT;
 
-    editorDrawRows();
+    abAppend(&ab, "\x1b[?25l", 6);// Adding this line stop the cursor from clitching
+    abAppend(&ab, "\x1b[H", 3);
 
-    write(STDOUT_FILENO,"\x1b[H",3);
+    editorDrawRows(&ab);
+
+    abAppend(&ab, "\x1b[H", 3);
+    abAppend(&ab, "\x1b[?25l", 6);
+
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abFree(&ab);
 }
 
+//this function takes the user print (later it should print the user input)
 void editorProcessKeyPress(){
     char c = editorReadKey();
 
@@ -74,8 +166,13 @@ void editorProcessKeyPress(){
     }
 }
 
+void initEditor(){
+    if(getWindowSize(&E.screenrows,&E.screencols) == -1) die("getWindowSize");
+}
+
 int main(){
     enableRawMode();
+    initEditor();
 
     while(1){
         editorRefreshScreen();
