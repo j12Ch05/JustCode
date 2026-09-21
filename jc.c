@@ -7,6 +7,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -68,6 +69,9 @@ struct abuf
 
 
 struct editorConfig E;
+
+//Prototypes
+void editorSetStatusMessage(const char *fmt, ...);
 
 void die(const char * s){
     write(STDOUT_FILENO,"\x1b[2J",4);
@@ -271,6 +275,26 @@ void editorInsertChar(int c){
     E.cx++;
 }
 
+//For saving to disk
+char *editorRowsToString(int *buflen){
+    int totlen = 0;
+    for(int j = 0 ; j < E.numrows; j++){
+        totlen += E.row[j].size + 1;
+    }
+    *buflen = totlen;
+
+    char *buf = malloc(totlen);
+    char *p = buf;
+    for(int j = 0 ; j < E.numrows ; j++){
+        memcpy(p,E.row[j].chars, E.row[j].size);
+        p += E.row[j].size;
+        *p = '\n';
+        p++;
+    }
+
+    return buf;
+}
+
 void editorOpen(char *filename){
     free(E.filename);
     E.filename = strdup(filename);
@@ -289,6 +313,30 @@ void editorOpen(char *filename){
     }
     free(line);
     fclose(fp);
+}
+
+void editorSave(){
+    if(E.filename == NULL) return;
+
+    int len;
+    char *buf = editorRowsToString(&len);
+
+    int fd = open(E.filename,O_RDWR | O_CREAT,0644 );
+    if(fd != -1){
+        if(ftruncate(fd,len) != -1){
+            if(write(fd,buf,len) == len){
+                close(fd);
+                free(buf);
+                editorSetStatusMessage("%d bytes written to disk", len);
+                return;
+            }
+        }
+        close(fd);
+    }
+    
+
+    editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
+    free(buf);
 }
 
 void editorScroll(){
@@ -456,14 +504,7 @@ void editorMoveCursor(int key){
     }
 }
 
-void editorSetStatusMessage(const char *fmt, ...){
-    va_list ap;
-    va_start(ap,fmt);
-    vsnprintf(E.statusmsg,sizeof(E.statusmsg),fmt,ap);
-    va_end(ap);
-    E.statusmsg_time = time(NULL);
 
-}
 
 //this function takes the user print (later it should print the user input)
 void editorProcessKeyPress(){
@@ -475,11 +516,16 @@ void editorProcessKeyPress(){
         /*TODO*/
         break;
 
-    case CTRL_KEY('x'):
+
+    case CTRL_KEY('l'):
         write(STDOUT_FILENO,"\x1b[2J",4);
         write(STDOUT_FILENO,"\x1b[H",3);
         exit(0);
         break;
+
+    case CTRL_KEY('s'):
+        editorSave();
+        break;  
 
 
     case HOME_KEY:
@@ -524,7 +570,6 @@ void editorProcessKeyPress(){
         editorMoveCursor(c);
         break;
 
-    case CTRL_KEY('l'):
     case '\x1b':
         break;
 
@@ -556,7 +601,7 @@ int main(int argc,char *argv[]){
     if(argc >=2){
         editorOpen(argv[1]);
     }
-    editorSetStatusMessage("HELP: CTRL-X  = quit");
+    editorSetStatusMessage("HELP: CTRL-S = save | CTRL-L  = leave");
 
     while(1){
         editorRefreshScreen();
@@ -566,4 +611,13 @@ int main(int argc,char *argv[]){
     return 0;
 
     
+}
+
+void editorSetStatusMessage(const char *fmt, ...){
+    va_list ap;
+    va_start(ap,fmt);
+    vsnprintf(E.statusmsg,sizeof(E.statusmsg),fmt,ap);
+    va_end(ap);
+    E.statusmsg_time = time(NULL);
+
 }
