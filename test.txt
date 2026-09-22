@@ -1,2 +1,2 @@
-Hello my name us JCC
-this ts the first test for mdfying a file 
+
+Hello this is the second test
