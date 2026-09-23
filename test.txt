@@ -1,3 +1,0 @@
-This is a new line
-//bla bla bla
-Hello this is the second test
