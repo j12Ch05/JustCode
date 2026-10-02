@@ -3,8 +3,9 @@ using namespace std;
 #include <vector>
 
 int main(){
-	int eefefeffef
-	string
+	/* this a multi
+	line
+	comment*/
 	string str = "Hello world\n";
 	cout << str ;
 
